@@ -35,11 +35,13 @@ import java.security.cert.X509Certificate
 import java.util.stream.Stream
 
 class PowerShellSignatureVerifierTests {
+  private val simpleVerificationParams =
+    SignatureVerificationParams(null, null, buildChain = false, withRevocationCheck = false)
+
   @ParameterizedTest
   @MethodSource("VerifySignTestProvider")
-  fun VerifySignTest(peResourceName: String, expectedResult: VerifySignatureStatus) {
-    val result = getTestByteChannel("powershell", peResourceName).use {
-      val verificationParams = SignatureVerificationParams(null, null, buildChain = false, withRevocationCheck = false)
+  fun VerifySignTest(resourceName: String, expectedResult: VerifySignatureStatus) {
+    val result = getTestByteChannel("powershell", resourceName).use {
       val psFile = PowershellScriptFile(it)
       val signatureData = psFile.GetSignatureData()
       if (signatureData.IsEmpty) {
@@ -54,8 +56,29 @@ class PowerShellSignatureVerifierTests {
       }
 
       val signedMessageVerifier = SignedMessageVerifier(ConsoleLogger.Instance)
-      runBlocking { signedMessageVerifier.VerifySignatureAsync(signedMessage, verificationParams) }
+      runBlocking { signedMessageVerifier.VerifySignatureAsync(signedMessage, simpleVerificationParams) }
     }
+    assertEquals(expectedResult, result.Status)
+  }
+
+  @ParameterizedTest
+  @MethodSource("VerifySignWithChainTestProvider")
+  fun VerifySignWithChainTest(
+    resourceName: String,
+    expectedResult: VerifySignatureStatus,
+  ) {
+    val result = getTestDataInputStream("powershell", resourceName).use {
+      val file = PowershellScriptFile(it)
+      val signatureData = file.GetSignatureData()
+      if (signatureData.IsEmpty) {
+        return@use VerifySignatureResult(VerifySignatureStatus.InvalidSignature)
+      }
+
+      val signedMessage = SignedMessage.CreateInstance(signatureData)
+      val signedMessageVerifier = SignedMessageVerifier(ConsoleLogger.Instance)
+      runBlocking { signedMessageVerifier.VerifySignatureAsync(signedMessage, chainVerificationParams) }
+    }
+
     assertEquals(expectedResult, result.Status)
   }
 
@@ -251,37 +274,20 @@ class PowerShellSignatureVerifierTests {
     return null
   }
 
-
-  @ParameterizedTest
-  @MethodSource("VerifySignWithChainTestProvider")
-  fun VerifySignWithChainTest(
-    peResourceName: String,
-    expectedResult: VerifySignatureStatus,
-    codesignRootCertStoreResourceName: String,
-    timestampRootCertStoreResourceName: String
-  ) {
-    val result = getTestByteChannel("powershell", peResourceName).use { peFileStream ->
-      getTestDataInputStream("powershell", codesignRootCertStoreResourceName).use { codesignroots ->
-        getTestDataInputStream("powershell", timestampRootCertStoreResourceName).use { timestamproots ->
-          val verificationParams = SignatureVerificationParams(
-            codesignroots, timestamproots, buildChain = true, withRevocationCheck = false
-          )
-
-          val psFile = PowershellScriptFile(peFileStream)
-          val signatureData = psFile.GetSignatureData()
-          val signedMessage = SignedMessage.CreateInstance(signatureData)
-          val signedMessageVerifier = SignedMessageVerifier(ConsoleLogger.Instance)
-          runBlocking { signedMessageVerifier.VerifySignatureAsync(signedMessage, verificationParams) }
+  private val chainVerificationParams by lazy {
+    getTestDataInputStream("powershell", DIGICERT_ROOT_G4).use { codesignroots ->
+      getTestDataInputStream("powershell", DIGICERT_ROOT_G4).use { timestamproots ->
+        SignatureVerificationParams(
+          codesignroots, timestamproots, buildChain = true, withRevocationCheck = false
+        ).apply {
+          this.RootCertificates // read streams
         }
       }
     }
-
-    assertEquals(expectedResult, result.Status)
   }
 
   companion object {
-    private const val digicert_root_g4 = "DigiCertTrustedRootG4.crt.pem"
-
+    private const val DIGICERT_ROOT_G4 = "DigiCertTrustedRootG4.crt.pem"
 
     @JvmStatic
     fun VerifySignTestProvider(): Stream<Arguments> {
@@ -315,14 +321,24 @@ class PowerShellSignatureVerifierTests {
     @JvmStatic
     fun VerifySignWithChainTestProvider(): Stream<Arguments> {
       return Stream.of(
-        Arguments.of("signed-script-utf-8-no-bom-crlf.ps1", VerifySignatureStatus.Valid, digicert_root_g4, digicert_root_g4),
-        Arguments.of("signed-script-utf-8-no-bom-lf.ps1", VerifySignatureStatus.Valid, digicert_root_g4, digicert_root_g4),
-        Arguments.of("signed-script-utf-8-bom-crlf.ps1", VerifySignatureStatus.Valid, digicert_root_g4, digicert_root_g4),
-        Arguments.of("signed-script-utf-8-bom-lf.ps1", VerifySignatureStatus.Valid, digicert_root_g4, digicert_root_g4),
-        Arguments.of("signed-script-utf-16be-crlf.ps1", VerifySignatureStatus.Valid, digicert_root_g4, digicert_root_g4),
-        Arguments.of("signed-script-utf-16be-lf.ps1", VerifySignatureStatus.Valid, digicert_root_g4, digicert_root_g4),
-        Arguments.of("signed-script-utf-16le-crlf.ps1", VerifySignatureStatus.Valid, digicert_root_g4, digicert_root_g4),
-        Arguments.of("signed-script-utf-16le-lf.ps1", VerifySignatureStatus.Valid, digicert_root_g4, digicert_root_g4),
+        // unsigned
+        Arguments.of("script-utf-8-no-bom-crlf.ps1", VerifySignatureStatus.InvalidSignature),
+        Arguments.of("script-utf-8-no-bom-lf.ps1", VerifySignatureStatus.InvalidSignature),
+        Arguments.of("script-utf-8-bom-crlf.ps1", VerifySignatureStatus.InvalidSignature),
+        Arguments.of("script-utf-8-bom-lf.ps1", VerifySignatureStatus.InvalidSignature),
+        Arguments.of("script-utf-16be-crlf.ps1", VerifySignatureStatus.InvalidSignature),
+        Arguments.of("script-utf-16be-lf.ps1", VerifySignatureStatus.InvalidSignature),
+        Arguments.of("script-utf-16le-crlf.ps1", VerifySignatureStatus.InvalidSignature),
+        Arguments.of("script-utf-16le-lf.ps1", VerifySignatureStatus.InvalidSignature),
+        // signed
+        Arguments.of("signed-script-utf-8-no-bom-crlf.ps1", VerifySignatureStatus.Valid),
+        Arguments.of("signed-script-utf-8-no-bom-lf.ps1", VerifySignatureStatus.Valid),
+        Arguments.of("signed-script-utf-8-bom-crlf.ps1", VerifySignatureStatus.Valid),
+        Arguments.of("signed-script-utf-8-bom-lf.ps1", VerifySignatureStatus.Valid),
+        Arguments.of("signed-script-utf-16be-crlf.ps1", VerifySignatureStatus.Valid),
+        Arguments.of("signed-script-utf-16be-lf.ps1", VerifySignatureStatus.Valid),
+        Arguments.of("signed-script-utf-16le-crlf.ps1", VerifySignatureStatus.Valid),
+        Arguments.of("signed-script-utf-16le-lf.ps1", VerifySignatureStatus.Valid),
       )
     }
   }

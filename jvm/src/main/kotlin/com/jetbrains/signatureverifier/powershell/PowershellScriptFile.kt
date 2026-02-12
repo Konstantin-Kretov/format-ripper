@@ -3,6 +3,7 @@ package com.jetbrains.signatureverifier.powershell
 import com.jetbrains.signatureverifier.SignableFile
 import com.jetbrains.signatureverifier.SignatureData
 import org.jetbrains.annotations.NotNull
+import java.io.InputStream
 import java.nio.channels.Channels
 import java.nio.channels.SeekableByteChannel
 import java.security.MessageDigest
@@ -13,6 +14,9 @@ open class PowershellScriptFile : SignableFile {
 
   constructor(@NotNull stream: SeekableByteChannel) {
     script = PowerShellScript(Channels.newInputStream(stream))
+  }
+  constructor(@NotNull stream: InputStream) {
+    script = PowerShellScript(stream)
   }
 
   override fun GetSignatureData(): SignatureData {
